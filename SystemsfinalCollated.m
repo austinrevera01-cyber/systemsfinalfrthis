@@ -632,6 +632,9 @@ function controller = controller_dev_local(params, velocity, SS_values, plot_opt
 
     % Controllers
     C_delta = controller.Kp1 + controller.Ki1/s;    % inner PI (δ-loop)
+
+    % Closed-loop steering plant used for yaw-rate tuning
+    T_delta = feedback(C_delta*G_delta, 1);
     C_r_plant = G_rdelta * T_delta;
     C_r_pd    = pidtune(C_r_plant, 'PD', omega_n_r);
     controller.Kp2 = C_r_pd.Kp;
@@ -641,8 +644,7 @@ function controller = controller_dev_local(params, velocity, SS_values, plot_opt
     C_psi   = controller.Kp3 + controller.Ki3/s;    % outer PI (heading)
 
     %% Closed-loop interconnections
-    % 1) Inner steering loop: δ_ref -> δ
-    T_delta = feedback(C_delta*G_delta, 1);
+    % 1) Inner steering loop: δ_ref -> δ (already formed for yaw tuning)
 
     % 2) Yaw-rate loop: r_ref -> r (uses closed δ-loop as actuator)
     L_r = C_r * G_rdelta * T_delta;
