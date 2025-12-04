@@ -97,6 +97,7 @@ function results = Systemsfinalprod_local(user_options)
     opts.partC_waypoint     = get_option_local(opts, 'partC_waypoint', 1);
     opts.voltage_limit      = get_option_local(opts, 'voltage_limit', 12);
     opts.steering_limit_deg = get_option_local(opts, 'steering_limit_deg', 20);
+    opts.yaw_cmd_limit      = get_option_local(opts, 'yaw_cmd_limit', 1.5); % [rad/s]
     % Evaluate heading steps at baseline (8 m/s) and high-speed (>60 m/s)
     opts.step_speeds        = get_option_local(opts, 'step_speeds', [8 60]);
     opts.step_time          = get_option_local(opts, 'step_time', 0.001);
@@ -214,7 +215,8 @@ function results = Systemsfinalprod_local(user_options)
                         'Vel', opts.controller_vel, ...
                         'waypoint_file', sanitize_waypoint_file_local(opts.partC_waypoint), ...
                         'voltage_limit', opts.voltage_limit, ...
-                        'steering_limit_deg', opts.steering_limit_deg);
+                        'steering_limit_deg', opts.steering_limit_deg, ...
+                        'yaw_cmd_limit', opts.yaw_cmd_limit);
 
     results.partC = solve_part_c_local(controls, params, partC_opts);
     results.stepC = results.partC;
@@ -227,6 +229,7 @@ function results = Systemsfinalprod_local(user_options)
                       'speeds', opts.step_speeds, ...
                       'voltage_limit', opts.voltage_limit, ...
                       'steering_limit_deg', opts.steering_limit_deg, ...
+                      'yaw_cmd_limit', opts.yaw_cmd_limit, ...
                       'yaw_tf', const_voltage_to_yaw_model);
 
     results.step_response = part_c_step_response_local(controls, params, step_opts);
@@ -238,6 +241,7 @@ function results = Systemsfinalprod_local(user_options)
                        'waypoint_file', sanitize_waypoint_file_local(opts.partD_waypoint), ...
                        'voltage_limit', opts.voltage_limit, ...
                        'steering_limit_deg', opts.steering_limit_deg, ...
+                       'yaw_cmd_limit', opts.yaw_cmd_limit, ...
                        'max_time', opts.partD_max_time, ...
                        'export_file', opts.partD_export_file);
 
@@ -591,9 +595,11 @@ function controller = controller_dev_local(params, velocity, SS_values, plot_opt
     Be  = SS_values.Be;
     tau = Je / Be;
 
-    % Desired dynamics
-    zeta = 0.7;   % damping ratio
-    TTS  = .6;   % target time-to-settle [s]
+    % Desired dynamics (faster inner loops to guarantee ψ settles ~0.6 s)
+    zeta       = 0.9;      % damping ratio (more damping to curb overshoot)
+    TTS_delta  = 0.25;     % steering loop target settle time [s]
+    TTS_r      = 0.35;     % yaw-rate loop target settle time [s]
+    TTS_psi    = 0.6;      % heading loop target settle time [s]
 
     % Bicycle model shorthand
     C0 = Cf + Cr;
@@ -606,19 +612,17 @@ function controller = controller_dev_local(params, velocity, SS_values, plot_opt
     D = ((C0*C2 - C1*m*velocity^2) - C1^2)/(Iz*m*velocity^2);
 
     % Inner steering loop (PI)
-    omega_n_delta = 4 / (zeta*TTS);
+    omega_n_delta = 4 / (zeta*TTS_delta);
     controller.Kp1 = (2*tau*omega_n_delta - 1) / K;
     controller.Ki1 = (tau*omega_n_delta^2) / K;
 
     % Yaw-rate loop (PD)
-    omega_n_r = 4 / (zeta*(TTS));
-    controller.Kp2 = 1;
-    controller.Kd2 = 1;
+    omega_n_r = 4 / (zeta*TTS_r);
 
     % Heading loop (PI)
-    omega_n_psi = 4 / (zeta*TTS);
+    omega_n_psi = 4 / (zeta*TTS_psi);
     controller.Kp3 = omega_n_psi*2*zeta;
-    controller.Ki3 = omega_n_psi^2
+    controller.Ki3 = omega_n_psi^2 * 0.6;   % softened integral to avoid runaway growth
 
     s = tf('s');
 
@@ -628,12 +632,19 @@ function controller = controller_dev_local(params, velocity, SS_values, plot_opt
 
     % Controllers
     C_delta = controller.Kp1 + controller.Ki1/s;    % inner PI (δ-loop)
+
+    % Closed-loop steering plant used for yaw-rate tuning
+    T_delta = feedback(C_delta*G_delta, 1);
+    C_r_plant = G_rdelta * T_delta;
+    C_r_pd    = pidtune(C_r_plant, 'PD', omega_n_r);
+    controller.Kp2 = C_r_pd.Kp;
+    controller.Kd2 = C_r_pd.Kd;
+
     C_r     = controller.Kp2 + controller.Kd2*s;    % yaw-rate PD
     C_psi   = controller.Kp3 + controller.Ki3/s;    % outer PI (heading)
 
     %% Closed-loop interconnections
-    % 1) Inner steering loop: δ_ref -> δ
-    T_delta = feedback(C_delta*G_delta, 1);
+    % 1) Inner steering loop: δ_ref -> δ (already formed for yaw tuning)
 
     % 2) Yaw-rate loop: r_ref -> r (uses closed δ-loop as actuator)
     L_r = C_r * G_rdelta * T_delta;
@@ -683,12 +694,10 @@ function controller = controller_dev_local(params, velocity, SS_values, plot_opt
     if plot_opts.show_plots
         prefix = plot_opts.figure_prefix;
         quick_step_plot_local(T_delta, [prefix 'Inner steering: \delta_{ref} -> \delta']);
-        quick_step_plot_local(T_r, [prefix 'Yaw-rate loop: r_{ref} -> r']);
-        quick_step_plot_local(T_psi, [prefix 'Heading loop: \psi_{ref} -> \psi']);
+        % Removed Figures 7 & 8 per request (yaw-rate and heading step plots)
 
         pole_plot_local(controller.loops.delta.poles, [prefix 'Steering loop poles']);
-        pole_plot_local(controller.loops.r.poles, [prefix 'Yaw-rate loop poles']);
-        pole_plot_local(controller.loops.psi.poles, [prefix 'Heading loop poles']);
+        % Removed Figures 10 & 11 per request (yaw-rate and heading pole plots)
 
         figure('Name', [prefix 'Heading loop Bode']);
         bode(T_psi);
@@ -822,6 +831,7 @@ function step_results = part_c_step_response_local(controller, params, opts)
     speeds        = get_option_local(opts, 'speeds', [8]);
     voltage_limit = get_option_local(opts, 'voltage_limit', 12);
     steer_lim_rad = deg2rad(get_option_local(opts, 'steering_limit_deg', 20));
+    yaw_cmd_limit = get_option_local(opts, 'yaw_cmd_limit', 1.5); % [rad/s]
     out_dir       = get_option_local(opts, 'output_dir', 'figures');
     yaw_tf        = get_option_local(opts, 'yaw_tf', []);
     X0            = get_option_local(opts, 'X0', [0 0 0 0 0]);
@@ -846,7 +856,7 @@ function step_results = part_c_step_response_local(controller, params, opts)
         Vtest = speeds(idx);
         result = run_heading_step_local(controller, params, Vtest, Ts, sim_duration, ...
                                   step_time, deg2rad(step_deg), voltage_limit, ...
-                                  steer_lim_rad, X0, yaw_model);
+                                  steer_lim_rad, yaw_cmd_limit, X0, yaw_model);
 
         figure('Name', sprintf('Heading Step %.0f m/s', result.time(end) / result.time(2)));
 
@@ -886,7 +896,7 @@ end
 
 function result = run_heading_step_local(controller, params, Vel, Ts, sim_duration, ...
                                    step_time, step_rad, voltage_limit, ...
-                                   steer_lim_rad, X0, yaw_model)
+                                   steer_lim_rad, yaw_cmd_limit, X0, yaw_model)
     steps = floor(sim_duration / Ts);
 
     result.time           = (0:steps-1)' * Ts;
@@ -939,9 +949,9 @@ function result = run_heading_step_local(controller, params, Vel, Ts, sim_durati
         steer_angle = (acc_counts * encoder_scale) / params.gear.N;
 
         head_err = wrap_to_pi_local(heading_ref - gps(3));
-        heading_int = heading_int + head_err * Ts;
-
-        yaw_cmd = controller.Kp3 * head_err + controller.Ki3 * heading_int;
+        [yaw_cmd, heading_int] = pi_with_antiwindup_local(head_err, heading_int, ...
+                                                         controller.Kp3, controller.Ki3, ...
+                                                         Ts, yaw_cmd_limit);
 
         yaw_err = yaw_cmd - yaw_gyro;
         yaw_err_deriv = (yaw_err - yaw_err_prev) / Ts;
@@ -951,10 +961,9 @@ function result = run_heading_step_local(controller, params, Vel, Ts, sim_durati
         steer_cmd = max(min(steer_cmd, steer_lim_rad), -steer_lim_rad);
 
         steer_err = steer_cmd - steer_angle;
-        steer_int = steer_int + steer_err * Ts;
-
-        voltage_cmd = controller.Kp1 * steer_err + controller.Ki1 * steer_int;
-        voltage_cmd = max(min(voltage_cmd, voltage_limit), -voltage_limit);
+        [voltage_cmd, steer_int] = pi_with_antiwindup_local(steer_err, steer_int, ...
+                                                           controller.Kp1, controller.Ki1, ...
+                                                           Ts, voltage_limit);
 
         [gps, yaw_gyro, counts] = run_Indy_car_Fall_25(voltage_cmd, Vel);
 
@@ -1013,8 +1022,26 @@ function metrics = compute_step_metrics_local(time, response, reference, step_ti
 
     metrics = struct('final_value', final_value, ...
                      'tolerance', tolerance, ...
-                     'settle_time', settle_time, ...
-                     'overshoot_pct', overshoot_pct);
+                    'settle_time', settle_time, ...
+                    'overshoot_pct', overshoot_pct);
+end
+
+function [u, integ] = pi_with_antiwindup_local(err, integ, Kp, Ki, Ts, limit)
+    integ_candidate = integ + err * Ts;
+    u_unsat = Kp * err + Ki * integ_candidate;
+
+    if isfinite(limit)
+        u_sat = max(min(u_unsat, limit), -limit);
+    else
+        u_sat = u_unsat;
+    end
+
+    if u_sat ~= u_unsat && Ki ~= 0
+        integ_candidate = integ_candidate + (u_sat - u_unsat) / Ki;
+    end
+
+    u = u_sat;
+    integ = integ_candidate;
 end
 
 function angle = wrap_to_pi_local(angle)
@@ -1044,6 +1071,7 @@ function partC = solve_part_c_local(controller, params, opts, X0)
     waypoint_file = get_option_local(opts, 'waypoint_file', 1);
     voltage_limit = get_option_local(opts, 'voltage_limit', 12);
     steer_lim_rad = deg2rad(get_option_local(opts, 'steering_limit_deg', 20));
+    yaw_cmd_limit = get_option_local(opts, 'yaw_cmd_limit', 1.5); % [rad/s]
 
     steps = floor(sim_duration / Ts);
 
@@ -1097,9 +1125,9 @@ function partC = solve_part_c_local(controller, params, opts, X0)
 
         desired_heading = atan2(wp(2) - gps(2), wp(1) - gps(1));
         head_err = wrap_to_pi_local(desired_heading - gps(3));
-        heading_int = heading_int + head_err * Ts;
-
-        yaw_cmd = controller.Kp3 * head_err + controller.Ki3 * heading_int;
+        [yaw_cmd, heading_int] = pi_with_antiwindup_local(head_err, heading_int, ...
+                                                         controller.Kp3, controller.Ki3, ...
+                                                         Ts, yaw_cmd_limit);
 
         yaw_err = yaw_cmd - yaw_gyro;
         yaw_err_deriv = (yaw_err - yaw_err_prev) / Ts;
@@ -1109,10 +1137,9 @@ function partC = solve_part_c_local(controller, params, opts, X0)
         steer_cmd = max(min(steer_cmd, steer_lim_rad), -steer_lim_rad);
 
         steer_err = steer_cmd - steer_angle;
-        steer_int = steer_int + steer_err * Ts;
-
-        voltage_cmd = controller.Kp1 * steer_err + controller.Ki1 * steer_int;
-        voltage_cmd = max(min(voltage_cmd, voltage_limit), -voltage_limit);
+        [voltage_cmd, steer_int] = pi_with_antiwindup_local(steer_err, steer_int, ...
+                                                           controller.Kp1, controller.Ki1, ...
+                                                           Ts, voltage_limit);
 
         if strcmp(sim_source, 'pcode')
             try
@@ -1158,6 +1185,7 @@ function traj = run_trajectory_validation_local(controller, params, opts, X0)
     waypoint_file  = get_option_local(opts, 'waypoint_file', 2);
     voltage_limit  = get_option_local(opts, 'voltage_limit', 12);
     steer_lim_rad  = deg2rad(get_option_local(opts, 'steering_limit_deg', 20));
+    yaw_cmd_limit  = get_option_local(opts, 'yaw_cmd_limit', 1.5); % [rad/s]
     max_time       = get_option_local(opts, 'max_time', 120);
     export_file    = get_option_local(opts, 'export_file', 'ims_track_run_for_google_earth.txt');
 
@@ -1225,9 +1253,9 @@ function traj = run_trajectory_validation_local(controller, params, opts, X0)
 
         desired_heading = atan2(wp(2) - gps(2), wp(1) - gps(1));
         head_err = wrap_to_pi_local(desired_heading - gps(3));
-        heading_int = heading_int + head_err * Ts;
-
-        yaw_cmd = controller.Kp3 * head_err + controller.Ki3 * heading_int;
+        [yaw_cmd, heading_int] = pi_with_antiwindup_local(head_err, heading_int, ...
+                                                         controller.Kp3, controller.Ki3, ...
+                                                         Ts, yaw_cmd_limit);
 
         yaw_err = yaw_cmd - yaw_gyro;
         yaw_err_deriv = (yaw_err - yaw_err_prev) / Ts;
@@ -1237,10 +1265,9 @@ function traj = run_trajectory_validation_local(controller, params, opts, X0)
         steer_cmd = max(min(steer_cmd, steer_lim_rad), -steer_lim_rad);
 
         steer_err = steer_cmd - steer_angle;
-        steer_int = steer_int + steer_err * Ts;
-
-        voltage_cmd = controller.Kp1 * steer_err + controller.Ki1 * steer_int;
-        voltage_cmd = max(min(voltage_cmd, voltage_limit), -voltage_limit);
+        [voltage_cmd, steer_int] = pi_with_antiwindup_local(steer_err, steer_int, ...
+                                                           controller.Kp1, controller.Ki1, ...
+                                                           Ts, voltage_limit);
 
         if strcmp(sim_source, 'pcode')
             try
