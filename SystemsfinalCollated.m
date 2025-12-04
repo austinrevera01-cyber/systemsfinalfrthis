@@ -448,13 +448,32 @@ function track = generate_ims_fallback_waypoints_local()
 
             east = (deg2rad(lon) - lon0) * deg2m_lon;
             north = (deg2rad(lat) - lat0) * deg2m_lat;
-            track = [east, north];
+            track_raw = [east, north];
 
-            % Close the loop if needed.
-            if any(track(end, :) ~= track(1, :))
-                track(end+1, :) = track(1, :); %#ok<AGROW>
+            % Reject extremely short exports (e.g., partial runs) that would end
+            % the waypoint list prematurely.
+            segments = diff(track_raw, 1, 1);
+            seg_dist = hypot(segments(:, 1), segments(:, 2));
+            total_len = sum(seg_dist);
+            min_len_ok = 3000; % [m] IMS lap is ~4 km
+            if total_len >= min_len_ok
+                % Downsample to avoid overly dense waypoints that collapse the
+                % lookahead distance.
+                min_spacing = 5; % [m]
+                s = [0; cumsum(seg_dist)];
+                target_s = (0:min_spacing:s(end)).';
+                east_rs = interp1(s, track_raw(:, 1), target_s, 'linear');
+                north_rs = interp1(s, track_raw(:, 2), target_s, 'linear');
+                track = [east_rs, north_rs];
+
+                % Close the loop if needed.
+                if any(track(end, :) ~= track(1, :))
+                    track(end+1, :) = track(1, :); %#ok<AGROW>
+                end
+                return;
+            else
+                warning('Fallback IMS export is only %.1f m long; using analytic oval instead.', total_len);
             end
-            return;
         catch
             % Fall through to analytic oval if parsing fails.
         end
