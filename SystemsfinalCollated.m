@@ -592,8 +592,8 @@ function controller = controller_dev_local(params, velocity, SS_values, plot_opt
     tau = Je / Be;
 
     % Desired dynamics
-    zeta = 0.8;   % damping ratio
-    TTS  = 0.5;   % target time-to-settle [s]
+    zeta = 0.7;   % damping ratio
+    TTS  = .6;   % target time-to-settle [s]
 
     % Bicycle model shorthand
     C0 = Cf + Cr;
@@ -612,12 +612,12 @@ function controller = controller_dev_local(params, velocity, SS_values, plot_opt
 
     % Yaw-rate loop (PD)
     omega_n_r = 4 / (zeta*(TTS));
-    controller.Kp2 = -((-A*C*(omega_n_r^2) + 2*A*D*omega_n_r*zeta - B*D + B*(omega_n_r^2)) / ((A^2)*(omega_n_r^2) - 2*A*B*omega_n_r*zeta + B^2)) + 10;
-    controller.Kd2 = -((A*D - A*omega_n_r^2 - B*C + 2*B*omega_n_r*zeta) / ((A^2)*(omega_n_r^2) - 2*A*B*omega_n_r*zeta + B^2));
+    controller.Kp2 = 1;
+    controller.Kd2 = 1;
 
     % Heading loop (PI)
     omega_n_psi = 4 / (zeta*TTS);
-    controller.Kp3 = omega_n_psi*2*zeta + 60;
+    controller.Kp3 = omega_n_psi*2*zeta;
     controller.Ki3 = omega_n_psi^2
 
     s = tf('s');
