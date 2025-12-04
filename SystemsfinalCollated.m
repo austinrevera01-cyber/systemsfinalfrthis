@@ -371,69 +371,154 @@ end
 
 function [track, export_latlon, export_source] = generate_ims_fallback_waypoints_local()
 
-    default_export = fullfile(fileparts(mfilename('fullpath')), 'waypoint_file_for_GPSVisualizer.txt');
+    base_dir = fileparts(mfilename('fullpath'));
+    default_export = fullfile(base_dir, 'waypoint_file_for_GPSVisualizer.txt');
     export_source = 'analytic';
     export_latlon = [];
+    min_len_ok = 2500; % [m] reject partial laps
+    min_spacing = 5;   % [m]
 
-    if exist(default_export, 'file') == 2
-        try
-            tbl = readtable(default_export, 'Delimiter', ',', 'HeaderLines', 1, 'ReadVariableNames', false);
-            lat = tbl{:, 1};
-            lon = tbl{:, 2};
-            origin_lat = lat(1);
-            origin_lon = lon(1);
+    [track, export_latlon] = try_load_ims_from_csv_local(default_export, min_len_ok, min_spacing);
+    if ~isempty(track)
+        export_source = 'gpsvisualizer';
+        return;
+    end
 
-            deg2m_lat = 111320; % meters per degree latitude (approx)
-            deg2m_lon = 111320 * cos(deg2rad(origin_lat));
-
-            east = (lon - origin_lon) * deg2m_lon;
-            north = (lat - origin_lat) * deg2m_lat;
-            track_raw = [east, north];
-
-            segments = diff(track_raw, 1, 1);
-            seg_dist = hypot(segments(:, 1), segments(:, 2));
-            total_len = sum(seg_dist);
-            min_len_ok = 2500; % [m] reject partial laps
-            if total_len >= min_len_ok
-                min_spacing = 5; % [m]
-                s = [0; cumsum(seg_dist)];
-                target_s = (0:min_spacing:s(end)).';
-                east_rs = interp1(s, track_raw(:, 1), target_s, 'linear');
-                north_rs = interp1(s, track_raw(:, 2), target_s, 'linear');
-                track = [east_rs, north_rs];
-
-                % Close the loop if needed.
-                if any(track(end, :) ~= track(1, :))
-                    track(end+1, :) = track(1, :); %#ok<AGROW>
-                end
-
-                export_lat = origin_lat + track(:, 2) / deg2m_lat;
-                export_lon = origin_lon + track(:, 1) / deg2m_lon;
-                export_latlon = [export_lat, export_lon];
-                export_source = 'gpsvisualizer';
-                return;
-            else
-                warning('Fallback IMS export is only %.1f m long; using synthetic oval instead.', total_len);
-            end
-        catch
+    kmz_candidates = dir(fullfile(base_dir, '*map.kmz'));
+    for k = 1:numel(kmz_candidates)
+        kmz_path = fullfile(base_dir, kmz_candidates(k).name);
+        [track, export_latlon] = try_load_ims_from_kmz_local(kmz_path, min_len_ok, min_spacing);
+        if ~isempty(track)
+            export_source = 'gpsvisualizer-kmz';
+            return;
         end
     end
 
+    warning('Waypoint files unavailable; using synthetic oval instead.');
     theta = linspace(pi, -pi, 1500).';
     a = 950;  % semi-major (east) [m]
     b = 550;  % semi-minor (north) [m]
     track = [a * cos(theta), b * sin(theta)];
     track(end+1, :) = track(1, :);
 
-    if exist('origin_lat', 'var') && exist('origin_lon', 'var')
-        deg2m_lat = 111320;
-        deg2m_lon = 111320 * cos(deg2rad(origin_lat));
-        export_lat = origin_lat + track(:, 2) / deg2m_lat;
-        export_lon = origin_lon + track(:, 1) / deg2m_lon;
-        export_latlon = [export_lat, export_lon];
-    else
-        export_latlon = [track(:, 2) / 111320, track(:, 1) / 111320];
+    export_latlon = [track(:, 2) / 111320, track(:, 1) / 111320];
+end
+
+function [track, export_latlon] = try_load_ims_from_csv_local(file_path, min_len_ok, min_spacing)
+
+    track = [];
+    export_latlon = [];
+
+    if exist(file_path, 'file') ~= 2
+        return;
     end
+
+    try
+        tbl = readtable(file_path, 'Delimiter', ',', 'HeaderLines', 1, 'ReadVariableNames', false);
+        lat = tbl{:, 1};
+        lon = tbl{:, 2};
+        [track_raw, export_latlon] = convert_latlon_to_track_local(lat, lon, min_spacing);
+        total_len = path_length_local(track_raw);
+        if total_len < min_len_ok
+            warning('Waypoint text file is only %.1f m long; ignoring partial lap.', total_len);
+            track = [];
+            export_latlon = [];
+            return;
+        end
+
+        track = track_raw;
+    catch ME
+        warning('Unable to read waypoint text file (%s).', ME.message);
+        track = [];
+        export_latlon = [];
+    end
+end
+
+function [track, export_latlon] = try_load_ims_from_kmz_local(kmz_path, min_len_ok, min_spacing)
+
+    track = [];
+    export_latlon = [];
+
+    if exist(kmz_path, 'file') ~= 2
+        return;
+    end
+
+    tmp_dir = tempname;
+    mkdir(tmp_dir);
+    cleanup = onCleanup(@() rmdir(tmp_dir, 's'));
+
+    try
+        unzip(kmz_path, tmp_dir);
+        kml_listing = dir(fullfile(tmp_dir, '*.kml'));
+        if isempty(kml_listing)
+            return;
+        end
+
+        kml_text = fileread(fullfile(tmp_dir, kml_listing(1).name));
+        token = regexp(kml_text, '<coordinates>([^<]+)</coordinates>', 'tokens', 'once');
+        if isempty(token)
+            return;
+        end
+
+        coord_vals = textscan(strtrim(token{1}), '%f,%f%f');
+        lon = coord_vals{1};
+        lat = coord_vals{2};
+        [track_raw, export_latlon] = convert_latlon_to_track_local(lat, lon, min_spacing);
+        total_len = path_length_local(track_raw);
+        if total_len < min_len_ok
+            warning('Waypoint KMZ %s is only %.1f m long; ignoring partial lap.', kmz_path, total_len);
+            track = [];
+            export_latlon = [];
+            return;
+        end
+
+        track = track_raw;
+    catch ME
+        warning('Unable to parse waypoint KMZ %s (%s).', kmz_path, ME.message);
+        track = [];
+        export_latlon = [];
+    end
+end
+
+function [track, export_latlon] = convert_latlon_to_track_local(lat, lon, min_spacing)
+
+    origin_lat = lat(1);
+    origin_lon = lon(1);
+
+    deg2m_lat = 111320; % meters per degree latitude (approx)
+    deg2m_lon = 111320 * cos(deg2rad(origin_lat));
+
+    east = (lon - origin_lon) * deg2m_lon;
+    north = (lat - origin_lat) * deg2m_lat;
+    track_raw = [east, north];
+
+    segments = diff(track_raw, 1, 1);
+    seg_dist = hypot(segments(:, 1), segments(:, 2));
+    s = [0; cumsum(seg_dist)];
+    target_s = (0:min_spacing:s(end)).';
+    east_rs = interp1(s, track_raw(:, 1), target_s, 'linear');
+    north_rs = interp1(s, track_raw(:, 2), target_s, 'linear');
+    track = [east_rs, north_rs];
+
+    % Close the loop if needed.
+    if any(track(end, :) ~= track(1, :))
+        track(end+1, :) = track(1, :); %#ok<AGROW>
+    end
+
+    export_lat = origin_lat + track(:, 2) / deg2m_lat;
+    export_lon = origin_lon + track(:, 1) / deg2m_lon;
+    export_latlon = [export_lat, export_lon];
+end
+
+function total_len = path_length_local(track)
+
+    if size(track, 1) < 2
+        total_len = 0;
+        return;
+    end
+
+    segments = diff(track, 1, 1);
+    total_len = sum(hypot(segments(:, 1), segments(:, 2)));
 end
 
 function amp = steady_state_amplitude_local(signal, time_vector, freq_hz)
