@@ -917,6 +917,7 @@ function result = run_heading_step_local(controller, params, Vel, Ts, sim_durati
     last_raw   = NaN;
 
     heading_int = 0;
+    heading_int_leak_tau = 0.5; % [s] bleed-off time constant for heading PI
     yaw_err_prev = 0;
     steer_int = 0;
 
@@ -948,6 +949,7 @@ function result = run_heading_step_local(controller, params, Vel, Ts, sim_durati
         steer_angle = (acc_counts * encoder_scale) / params.gear.N;
 
         head_err = wrap_to_pi_local(heading_ref - gps(3));
+        heading_int = heading_int * exp(-Ts / heading_int_leak_tau);
         [yaw_cmd, heading_int] = pi_with_antiwindup_local(head_err, heading_int, ...
                                                          KP3, KI, ...
                                                          Ts, yaw_cmd_limit);
@@ -1108,6 +1110,7 @@ function partC = solve_part_c_local(controller, params, opts, X0)
     last_raw   = NaN;
 
     heading_int = 0;
+    heading_int_leak_tau = 0.5; % [s] bleed-off time constant for heading PI
     yaw_err_prev = 0;
     steer_int = 0;
 
@@ -1129,6 +1132,8 @@ function partC = solve_part_c_local(controller, params, opts, X0)
 
         desired_heading = atan2(wp(2) - gps(2), wp(1) - gps(1));
         head_err = wrap_to_pi_local(desired_heading - gps(3));
+
+        heading_int = heading_int * exp(-Ts / heading_int_leak_tau);
         [yaw_cmd, heading_int] = pi_with_antiwindup_local(head_err, heading_int, ...
                                                          KP3, KI, ...
                                                          Ts, yaw_cmd_limit);
@@ -1150,11 +1155,21 @@ function partC = solve_part_c_local(controller, params, opts, X0)
                 [gps, yaw_gyro, counts, wp, lat_err] = indy_runner(voltage_cmd, Vel);
             catch ME
                 if contains(ME.message, 'WP_array')
-                    partC.status = 'pcode_unavailable_midrun';
-                    partC.steps_completed = k - 1;
-                    partC.waypoint(k:end, :)   = NaN;
-                    partC.lateral_error(k:end) = NaN;
-                    break;
+                    % Attempt to switch to the lightweight fallback runner so
+                    % the remainder of the trajectory can complete instead of
+                    % stopping early.
+                    [indy_runner, gps, yaw_gyro, counts, wp, lat_err, sim_source] = ...
+                        make_fallback_waypoint_runner_local(Vel, X0, waypoint_file);
+
+                    if isempty(indy_runner)
+                        partC.status = 'pcode_unavailable_midrun';
+                        partC.steps_completed = k - 1;
+                        partC.waypoint(k:end, :)   = NaN;
+                        partC.lateral_error(k:end) = NaN;
+                        break;
+                    else
+                        partC.status = 'fallback_midrun';
+                    end
                 else
                     rethrow(ME);
                 end
@@ -1170,6 +1185,10 @@ function partC = solve_part_c_local(controller, params, opts, X0)
         partC.lateral_error(k)  = lat_err;
         partC.steering_angle(k) = steer_angle;
         partC.heading_error(k)  = head_err;
+    end
+
+    if ~isfield(partC, 'steps_completed')
+        partC.steps_completed = steps;
     end
 end
 
