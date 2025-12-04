@@ -630,6 +630,10 @@ function controller = controller_dev_local(params, velocity, SS_values, plot_opt
     KP3 = 0;
     KI  = 10;
 
+    controller.gains = struct('KD1', KD1, 'KP1', KP1, ...
+                               'KD2', KD2, 'KP2', KP2, ...
+                               'KP3', KP3, 'KI', KI);
+
     C1 = KD1*s + KP1;      % K_D1 s + K_P1
     C2 = KD2*s + KP2;      % K_D2 s + K_P2
     C3 = KP3*s + KI;       % K_P3 s + K_I
@@ -889,6 +893,11 @@ function result = run_heading_step_local(controller, params, Vel, Ts, sim_durati
                                    steer_lim_rad, yaw_cmd_limit, X0, yaw_model)
     steps = floor(sim_duration / Ts);
 
+    gains = controller.gains;
+    KD1 = gains.KD1; KP1 = gains.KP1;
+    KD2 = gains.KD2; KP2 = gains.KP2;
+    KP3 = gains.KP3; KI  = gains.KI;
+
     result.time           = (0:steps-1)' * Ts;
     result.heading_ref    = zeros(steps, 1);
     result.heading        = zeros(steps, 1);
@@ -1063,6 +1072,11 @@ function partC = solve_part_c_local(controller, params, opts, X0)
     steer_lim_rad = deg2rad(get_option_local(opts, 'steering_limit_deg', 20));
     yaw_cmd_limit = get_option_local(opts, 'yaw_cmd_limit', 1.5); % [rad/s]
 
+    gains = controller.gains;
+    KD1 = gains.KD1; KP1 = gains.KP1;
+    KD2 = gains.KD2; KP2 = gains.KP2;
+    KP3 = gains.KP3; KI  = gains.KI;
+
     steps = floor(sim_duration / Ts);
 
     partC.time           = (0:steps-1)' * Ts;
@@ -1178,6 +1192,11 @@ function traj = run_trajectory_validation_local(controller, params, opts, X0)
     yaw_cmd_limit  = get_option_local(opts, 'yaw_cmd_limit', 1.5); % [rad/s]
     max_time       = get_option_local(opts, 'max_time', 120);
     export_file    = get_option_local(opts, 'export_file', 'ims_track_run_for_google_earth.txt');
+
+    gains = controller.gains;
+    KD1 = gains.KD1; KP1 = gains.KP1;
+    KD2 = gains.KD2; KP2 = gains.KP2;
+    KP3 = gains.KP3; KI  = gains.KI;
 
     steps = floor(max_time / Ts);
 
