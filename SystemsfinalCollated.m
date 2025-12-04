@@ -618,13 +618,11 @@ function controller = controller_dev_local(params, velocity, SS_values, plot_opt
 
     % Yaw-rate loop (PD)
     omega_n_r = 4 / (zeta*TTS_r);
-    controller.Kp2 = 1;
-    controller.Kd2 = 1;
 
     % Heading loop (PI)
     omega_n_psi = 4 / (zeta*TTS_psi);
     controller.Kp3 = omega_n_psi*2*zeta;
-    controller.Ki3 = omega_n_psi^2
+    controller.Ki3 = omega_n_psi^2 * 0.6;   % softened integral to avoid runaway growth
 
     s = tf('s');
 
@@ -634,6 +632,11 @@ function controller = controller_dev_local(params, velocity, SS_values, plot_opt
 
     % Controllers
     C_delta = controller.Kp1 + controller.Ki1/s;    % inner PI (δ-loop)
+    C_r_plant = G_rdelta * T_delta;
+    C_r_pd    = pidtune(C_r_plant, 'PD', omega_n_r);
+    controller.Kp2 = C_r_pd.Kp;
+    controller.Kd2 = C_r_pd.Kd;
+
     C_r     = controller.Kp2 + controller.Kd2*s;    % yaw-rate PD
     C_psi   = controller.Kp3 + controller.Ki3/s;    % outer PI (heading)
 
