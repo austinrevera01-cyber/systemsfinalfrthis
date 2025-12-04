@@ -1,39 +1,4 @@
 function varargout = SystemsfinalCollated(varargin)
-%SYSTEMSFINALCOLLATED Unified access point for the SystemsFinal MATLAB codebase.
-%   This single file aggregates the contents of all MATLAB functions in the
-%   repository so the project can be shared or executed with one dependency.
-%
-%   The default call executes every assignment step end-to-end:
-%     (A) Identify steering/rack dynamics and build the yaw-rate model.
-%     (B) Design the cascaded steering/yaw/heading controllers with metrics.
-%     (C) Run waypoint tracking on the provided p-code plant.
-%     (D) Validate with heading step responses across requested speeds.
-%     (E) Demonstrate IMS trajectory tracking (WP #2) with Google Earth export.
-%
-%   Usage:
-%     results = SystemsfinalCollated(opts)       % Run Systemsfinalprod workflow.
-%     [yaw_tf] = SystemsfinalCollated('build_bicycle_model', params, Vel)
-%     ...and similarly for the other component functions listed below.
-%
-%   Supported function selectors (case-insensitive):
-%     - 'systemsfinalprod' (default when first argument is not a char)
-%     - 'build_bicycle_model'
-%     - 'collect_pcode_response'
-%     - 'controller_dev'
-%     - 'pcode_identification'
-%     - 'part_c_step_response'
-%     - 'solve_part_c'
-%     - 'steering'
-%     - 'run_Indy_car_help' (returns help text string)
-%
-%   Example:
-%       opts = struct('Vel', 10);
-%       results = SystemsfinalCollated(opts);
-%       yaw_tf = SystemsfinalCollated('build_bicycle_model', results.params, 10);
-%
-%   The implementation mirrors the original standalone .m files but keeps all
-%   logic together for portability, including explicit outputs for steps A–E.
-
     if nargin == 0 || ~ischar(varargin{1})
         [varargout{1:nargout}] = Systemsfinalprod_local(varargin{:});
         return;
@@ -58,9 +23,7 @@ function varargout = SystemsfinalCollated(varargin)
         case 'solve_part_c'
             [varargout{1:nargout}] = solve_part_c_local(args{:});
         case 'steering'
-            [varargout{1:nargout}] = steering_local(args{:});
-        case {'run_indy_car_help', 'run_Indy_car_help'}
-            [varargout{1:nargout}] = run_Indy_car_help_local();
+            [varargout{1:nargout}] = steering_local(args{:}); 
         otherwise
             error('SystemsfinalCollated:UnknownFunction', ...
                   'Unknown function selector "%s".', varargin{1});
@@ -74,7 +37,6 @@ end
 function results = Systemsfinalprod_local(user_options)
     clc; close all;
 
-    % If the caller provided an options struct, use it. Otherwise start fresh.
     if nargin > 0
         opts = user_options;
     else
@@ -98,11 +60,9 @@ function results = Systemsfinalprod_local(user_options)
     opts.voltage_limit      = get_option_local(opts, 'voltage_limit', 12);
     opts.steering_limit_deg = get_option_local(opts, 'steering_limit_deg', 20);
     opts.yaw_cmd_limit      = get_option_local(opts, 'yaw_cmd_limit', 1.5); % [rad/s]
-    % Evaluate heading steps at baseline (8 m/s) and high-speed (>60 m/s)
     opts.step_speeds        = get_option_local(opts, 'step_speeds', [8 60]);
     opts.step_time          = get_option_local(opts, 'step_time', 0.001);
     opts.step_deg           = get_option_local(opts, 'step_deg', 5);
-    % IMS waypoint lap export for Google Earth / GPSVisualizer
     opts.partD_waypoint     = get_option_local(opts, 'partD_waypoint', 2);
     opts.partD_vel          = get_option_local(opts, 'partD_vel', 15);
     opts.partD_max_time     = get_option_local(opts, 'partD_max_time', 120);
@@ -270,9 +230,6 @@ function params = default_parameters_local()
 end
 
 function wp_file = sanitize_waypoint_file_local(wp_file)
-    % Ensure the waypoint selection matches the p-code availability.
-    % Valid files are 0 (none), 1 (double lane change), 2 (IMS), 3 (Barber).
-    % File 4 (NCAT) is explicitly unavailable in the provided p-code.
 
     if isempty(wp_file) || ~isnumeric(wp_file) || ~isscalar(wp_file)
         warning('Waypoint selector must be a numeric scalar. Falling back to IMS (2).');
@@ -290,25 +247,16 @@ function wp_file = sanitize_waypoint_file_local(wp_file)
 end
 
 function [gps, yaw_gyro, counts, wp, lat_err] = call_indy_quietly_local(voltage, Vel, X0, wp_file)
-    % Invoke the p-code simulator while suppressing console chatter (e.g.,
-    % "NCAT not available yet") so the workflow stays clean even when the
-    % bundled waypoint data are missing. Any thrown errors still propagate so
-    % the fallback logic can react.
 
-    warn_state = warning; %#ok<WNOFFLN> preserve existing warning settings
+    warn_state = warning;
     warning('off', 'all');
     cleaner = onCleanup(@() warning(warn_state));
 
     [~, gps, yaw_gyro, counts, wp, lat_err] = evalc('run_Indy_car_Fall_25(voltage, Vel, X0, wp_file);');
-    clear cleaner; %#ok<CLMAT> restore warning state
+    clear cleaner;
 end
 
 function [gps, yaw_gyro, counts, wp, lat_err, wp_file_used, sim_source, runner] = kickoff_run_indy_with_fallback_local(voltage, Vel, X0, wp_file)
-    % Start the p-code simulator with a safe waypoint selection. If the p-code
-    % throws the known "WP_array" error (e.g., NCAT unavailable), automatically
-    % revert to IMS (2) so the workflow can proceed. When the IMS waypoint data
-    % itself is missing, fall back to an internal kinematic waypoint runner so
-    % the trajectory steps can still execute instead of being disabled.
 
     wp_file_used = sanitize_waypoint_file_local(wp_file);
     sim_source = 'pcode';
@@ -318,9 +266,7 @@ function [gps, yaw_gyro, counts, wp, lat_err, wp_file_used, sim_source, runner] 
         [gps, yaw_gyro, counts, wp, lat_err] = call_indy_quietly_local(voltage, Vel, X0, wp_file_used);
     catch ME
         if contains(ME.message, 'WP_array')
-            % If the requested waypoint file already maps to IMS, attempt a
-            % lightweight internal fallback trajectory generator before
-            % abandoning the run entirely.
+
             if wp_file_used == 2
                 [runner, gps, yaw_gyro, counts, wp, lat_err, sim_source] = ...
                     make_fallback_waypoint_runner_local(Vel, X0, wp_file_used);
@@ -359,10 +305,6 @@ function [gps, yaw_gyro, counts, wp, lat_err, wp_file_used, sim_source, runner] 
 end
 
 function [runner, gps, yaw_gyro, counts, wp, lat_err, sim_source] = make_fallback_waypoint_runner_local(Vel, X0, wp_file)
-    % Construct a simple waypoint follower when the p-code is missing waypoint
-    % data (e.g., WP_array undefined for IMS). This is not a physics-accurate
-    % substitute but keeps the end-to-end workflow functional with a smooth
-    % oval trajectory.
 
     if wp_file ~= 2
         runner = [];
@@ -380,13 +322,11 @@ function [runner, gps, yaw_gyro, counts, wp, lat_err, sim_source] = make_fallbac
     Ts = 0.001;
 
     function [gps_out, yaw_out, counts_out, wp_out, lat_err_out] = runner_fn(voltage_cmd, Vel_cmd)
-        %#ok<INUSD> % voltage_cmd is unused for the kinematic fallback
         if state.idx > size(track, 1)
             state.idx = 1;
         end
 
         wp_out = track(state.idx, :);
-        % Advance the target waypoint if we're close enough.
         while norm(wp_out - state.pos) < Vel_cmd * Ts && state.idx < size(track, 1)
             state.idx = state.idx + 1;
             wp_out = track(state.idx, :);
@@ -430,10 +370,6 @@ function [runner, gps, yaw_gyro, counts, wp, lat_err, sim_source] = make_fallbac
 end
 
 function [track, export_latlon, export_source] = generate_ims_fallback_waypoints_local()
-    % Build an IMS-like oval from the GPSVisualizer export when available so
-    % the plan-view plot reflects the expected shape. If the file is missing or
-    % too short, fall back to a synthetic oval with the same origin and export
-    % a resampled lat/lon list for Google Earth.
 
     default_export = fullfile(fileparts(mfilename('fullpath')), 'waypoint_file_for_GPSVisualizer.txt');
     export_source = 'analytic';
@@ -480,20 +416,15 @@ function [track, export_latlon, export_source] = generate_ims_fallback_waypoints
                 warning('Fallback IMS export is only %.1f m long; using synthetic oval instead.', total_len);
             end
         catch
-            % Fall through to analytic oval if parsing fails.
         end
     end
 
-    % Synthetic oval roughly matching IMS lap distance when real export is
-    % missing or too short.
     theta = linspace(pi, -pi, 1500).';
     a = 950;  % semi-major (east) [m]
     b = 550;  % semi-minor (north) [m]
     track = [a * cos(theta), b * sin(theta)];
     track(end+1, :) = track(1, :);
 
-    % Anchor the synthetic oval around the GPSVisualizer origin when possible
-    % so exported files still plot near IMS in Google Earth.
     if exist('origin_lat', 'var') && exist('origin_lon', 'var')
         deg2m_lat = 111320;
         deg2m_lon = 111320 * cos(deg2rad(origin_lat));
@@ -506,9 +437,6 @@ function [track, export_latlon, export_source] = generate_ims_fallback_waypoints
 end
 
 function amp = steady_state_amplitude_local(signal, time_vector, freq_hz)
-    % Estimate steady-state amplitude of a sinusoidal component by focusing on
-    % the latter half of the record, fitting to a sine at freq_hz, and
-    % returning the peak magnitude.
     tail_start = ceil(numel(signal) / 2);
     t_tail = time_vector(tail_start:end);
     y_tail = signal(tail_start:end);
@@ -634,10 +562,6 @@ function controller = controller_dev_local(params, velocity, SS_values, plot_opt
     tau = Je / Be;
     s = tf('s');
 
-     %% -------------------- 1. Motor + steering rack (inner plant) ---------------
-    % Use the identified rack inertia/damping along with the configured gear
-    % ratio and motor torque constant so the inner-plant transfer function
-    % matches the model used throughout the workflow.
     Je = SS_values.Je;
     be = SS_values.Be;
     N  = params.gear.N;
@@ -726,10 +650,8 @@ function controller = controller_dev_local(params, velocity, SS_values, plot_opt
     if plot_opts.show_plots
         prefix = plot_opts.figure_prefix;
         quick_step_plot_local(T_psi, [prefix 'Heading: \delta_{ref} -> \delta']);
-        % Removed Figures 7 & 8 per request (yaw-rate and heading step plots)
 
         pole_plot_local(controller.loops.psi.poles, [prefix 'Heading loop poles']);
-        % Removed Figures 10 & 11 per request (yaw-rate and heading pole plots)
 
         figure('Name', [prefix 'Heading loop Bode']);
         bode(T_psi);
@@ -764,8 +686,6 @@ function pole_plot_local(poles, title_str)
 end
 
 function [amp, phase] = fit_sine_local(signal, time_vector, freq_rad_s)
-    % Estimate amplitude and phase of a sinusoid at freq_rad_s using the
-    % tail of the record to ignore transients.
     tail_start = ceil(numel(signal) / 2);
     t_tail = time_vector(tail_start:end);
     y_tail = signal(tail_start:end);
@@ -778,7 +698,6 @@ function [amp, phase] = fit_sine_local(signal, time_vector, freq_rad_s)
 end
 
 function deg_wrapped = wrap_to_180_local(degrees)
-    % Wrap angles to the [-180, 180] deg range for reporting phase lags.
     deg_wrapped = mod(degrees + 180, 360) - 180;
 end
 
@@ -1128,7 +1047,6 @@ function partC = solve_part_c_local(controller, params, opts, X0)
     partC.steering_angle = zeros(steps, 1);
     partC.heading_error  = zeros(steps, 1);
 
-    % Initialize the simulator with explicit initial conditions/waypoints.
     [gps, yaw_gyro, counts, wp, lat_err, waypoint_file, sim_source, indy_runner] = ...
         kickoff_run_indy_with_fallback_local(0, Vel, X0, waypoint_file);
     partC.used_waypoint_file = waypoint_file;
@@ -1155,7 +1073,7 @@ function partC = solve_part_c_local(controller, params, opts, X0)
     encoder_scale = (2*pi) / params.encoder.counts_per_rev;
 
     for k = 1:steps
-        % Use previous count to estimate steering angle at start of step.
+
         if isnan(last_raw)
             acc_counts = counts;
         else
@@ -1193,9 +1111,7 @@ function partC = solve_part_c_local(controller, params, opts, X0)
                 [gps, yaw_gyro, counts, wp, lat_err] = indy_runner(voltage_cmd, Vel);
             catch ME
                 if contains(ME.message, 'WP_array')
-                    % Attempt to switch to the lightweight fallback runner so
-                    % the remainder of the trajectory can complete instead of
-                    % stopping early.
+
                     [indy_runner, gps, yaw_gyro, counts, wp, lat_err, sim_source] = ...
                         make_fallback_waypoint_runner_local(Vel, X0, waypoint_file);
 
@@ -1231,8 +1147,6 @@ function partC = solve_part_c_local(controller, params, opts, X0)
 end
 
 function traj = run_trajectory_validation_local(controller, params, opts, X0)
-    % Execute a full IMS (WP #2) lap at 15 m/s and export the GPS track for
-    % Google Earth / GPSVisualizer review.
 
     if nargin < 3
         opts = struct();
@@ -1269,7 +1183,6 @@ function traj = run_trajectory_validation_local(controller, params, opts, X0)
     traj.lateral_error  = zeros(steps, 1);
     traj.position_EN    = zeros(steps, 2);
 
-    % Kick off the simulator; clear after to avoid repeated clears inside loop.
     [gps, yaw_gyro, counts, wp, lat_err, waypoint_file, sim_source, indy_runner] = ...
         kickoff_run_indy_with_fallback_local(0, Vel, X0, waypoint_file);
     traj.used_waypoint_file = waypoint_file;
@@ -1408,9 +1321,6 @@ function traj = run_trajectory_validation_local(controller, params, opts, X0)
     title(sprintf('IMS waypoint tracking at 15 m/s (%s)', traj.sim_source));
     legend('show');
 
-    % Preserve/export a usable Google Earth waypoint file. When the bundled
-    % GPSVisualizer trace is short, synthesize a full oval and write the
-    % resampled lat/lon list instead of copying the unusable source.
     [~, export_latlon, export_source] = generate_ims_fallback_waypoints_local();
     if ~isempty(export_file) && ~isempty(export_latlon)
         fid = fopen(export_file, 'w');
@@ -1433,11 +1343,4 @@ function G = steering_local(params, coefficients)
     Be = coefficients.Be;
 
     G = (N*Kt)/(Je*s^2 + Be*s);
-end
-
-function help_text = run_Indy_car_help_local()
-%RUN_INDY_CAR_HELP_LOCAL Provide the documentation string from run_Indy_car_help (2).m.
-%   Returns the long-form usage description originally distributed alongside
-%   the simulator p-code.
-    help_text = fileread(fullfile(fileparts(mfilename('fullpath')), 'run_Indy_car_help (2).m'));
 end
