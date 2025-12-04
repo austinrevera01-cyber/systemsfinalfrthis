@@ -917,6 +917,7 @@ function result = run_heading_step_local(controller, params, Vel, Ts, sim_durati
     last_raw   = NaN;
 
     heading_int = 0;
+    heading_int_leak_tau = 0.5; % [s] bleed-off time constant for heading PI
     yaw_err_prev = 0;
     steer_int = 0;
 
@@ -948,6 +949,7 @@ function result = run_heading_step_local(controller, params, Vel, Ts, sim_durati
         steer_angle = (acc_counts * encoder_scale) / params.gear.N;
 
         head_err = wrap_to_pi_local(heading_ref - gps(3));
+        heading_int = heading_int * exp(-Ts / heading_int_leak_tau);
         [yaw_cmd, heading_int] = pi_with_antiwindup_local(head_err, heading_int, ...
                                                          KP3, KI, ...
                                                          Ts, yaw_cmd_limit);
@@ -1108,6 +1110,7 @@ function partC = solve_part_c_local(controller, params, opts, X0)
     last_raw   = NaN;
 
     heading_int = 0;
+    heading_int_leak_tau = 0.5; % [s] bleed-off time constant for heading PI
     yaw_err_prev = 0;
     steer_int = 0;
 
@@ -1130,9 +1133,7 @@ function partC = solve_part_c_local(controller, params, opts, X0)
         desired_heading = atan2(wp(2) - gps(2), wp(1) - gps(1));
         head_err = wrap_to_pi_local(desired_heading - gps(3));
 
-        % Bleed the heading integrator toward zero so small residual errors
-        % do not accumulate and prevent the heading from settling.
-        heading_int = 0.995 * heading_int;
+        heading_int = heading_int * exp(-Ts / heading_int_leak_tau);
         [yaw_cmd, heading_int] = pi_with_antiwindup_local(head_err, heading_int, ...
                                                          KP3, KI, ...
                                                          Ts, yaw_cmd_limit);
