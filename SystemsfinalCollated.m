@@ -591,9 +591,11 @@ function controller = controller_dev_local(params, velocity, SS_values, plot_opt
     Be  = SS_values.Be;
     tau = Je / Be;
 
-    % Desired dynamics
-    zeta = 0.7;   % damping ratio
-    TTS  = .6;   % target time-to-settle [s]
+    % Desired dynamics (faster inner loops to guarantee ψ settles ~0.6 s)
+    zeta       = 0.7;      % damping ratio
+    TTS_delta  = 0.25;     % steering loop target settle time [s]
+    TTS_r      = 0.35;     % yaw-rate loop target settle time [s]
+    TTS_psi    = 0.6;      % heading loop target settle time [s]
 
     % Bicycle model shorthand
     C0 = Cf + Cr;
@@ -606,17 +608,17 @@ function controller = controller_dev_local(params, velocity, SS_values, plot_opt
     D = ((C0*C2 - C1*m*velocity^2) - C1^2)/(Iz*m*velocity^2);
 
     % Inner steering loop (PI)
-    omega_n_delta = 4 / (zeta*TTS);
+    omega_n_delta = 4 / (zeta*TTS_delta);
     controller.Kp1 = (2*tau*omega_n_delta - 1) / K;
     controller.Ki1 = (tau*omega_n_delta^2) / K;
 
     % Yaw-rate loop (PD)
-    omega_n_r = 4 / (zeta*(TTS));
+    omega_n_r = 4 / (zeta*TTS_r);
     controller.Kp2 = 1;
     controller.Kd2 = 1;
 
     % Heading loop (PI)
-    omega_n_psi = 4 / (zeta*TTS);
+    omega_n_psi = 4 / (zeta*TTS_psi);
     controller.Kp3 = omega_n_psi*2*zeta;
     controller.Ki3 = omega_n_psi^2
 
@@ -683,12 +685,10 @@ function controller = controller_dev_local(params, velocity, SS_values, plot_opt
     if plot_opts.show_plots
         prefix = plot_opts.figure_prefix;
         quick_step_plot_local(T_delta, [prefix 'Inner steering: \delta_{ref} -> \delta']);
-        quick_step_plot_local(T_r, [prefix 'Yaw-rate loop: r_{ref} -> r']);
-        quick_step_plot_local(T_psi, [prefix 'Heading loop: \psi_{ref} -> \psi']);
+        % Removed Figures 7 & 8 per request (yaw-rate and heading step plots)
 
         pole_plot_local(controller.loops.delta.poles, [prefix 'Steering loop poles']);
-        pole_plot_local(controller.loops.r.poles, [prefix 'Yaw-rate loop poles']);
-        pole_plot_local(controller.loops.psi.poles, [prefix 'Heading loop poles']);
+        % Removed Figures 10 & 11 per request (yaw-rate and heading pole plots)
 
         figure('Name', [prefix 'Heading loop Bode']);
         bode(T_psi);
